@@ -35,6 +35,10 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
       DATABASE_URL: "postgres://atlas:${DB_PASSWORD:-atlas}@db:5432/atlas"
+      # NetBox dashboard
+      NETBOX_API_TOKEN: ${NETBOX_API_TOKEN:-}
+      ATLAS_RUN_SCHEDULER: ${ATLAS_RUN_SCHEDULER:-1}
+      NETBOX_INGEST_INTERVAL_MIN: ${NETBOX_INGEST_INTERVAL_MIN:-15}
     volumes:
       - uploads:/app/uploads
     depends_on:

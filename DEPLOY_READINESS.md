@@ -134,6 +134,127 @@ then `kubectl describe pod` the web pod to confirm envFrom resolved everything t
 - `Optic_Count/Dockerfile`, `docker-compose.yml`, `requirements.txt`
 - `Optic_Count/.env`, `.env.example`
 - `Optic_Count/atlas_web_app.py`, `demo_web_app.py`, `demo_auth_ai.py`, `atlas_data_loader.py`, `gsheet_fetcher.py`, `Netbox_query.py`
-- `DCT_Scripts/CLAUDE.md`, `README.md`, `recap.md`, `ARCHITECTURE_GUIDE.md`
+- `DCT_Scripts/CLAUDE.md`, `README.md`, `ARCHITECTURE_GUIDE.md`
 - `Optic_Count/README.md`, `Change.md`, `Project_Overview.md`
 - git status and last 20 commits on `lamars-branch`
+
+---
+
+# Deploy Guide (Kind / Helm)
+
+Last updated: 2026-04-19
+
+## Prerequisites
+
+- Docker Desktop running
+- `kind`, `kubectl`, `helm` installed
+- Working directory: `~/Atlas/DCT_Scripts/Optic_Count`
+
+## values-local.yaml
+
+Create this file in `Optic_Count/` (do not commit):
+
+```yaml
+secrets:
+  dbPassword: "atlas-rocks"
+  demoTokenSecret: "d32e404142fc0be7d0ef85b05cfa04495ab4cc3887f798c404c1d0a6e1ce4bd0"
+  anthropicApiKey: "sk-ant-..."      # your real key
+  netboxApiToken: ""                 # fill in if testing Netbox streaming
+```
+
+**Important:** `demoTokenSecret` must be a real hex string. Helm does not expand shell commands. Generate with:
+```
+openssl rand -hex 32
+```
+
+## Full Clean Deploy (from scratch)
+
+```bash
+# 1. Tear down any existing cluster
+kind delete cluster
+
+# 2. Build the Docker image
+cd ~/Atlas/DCT_Scripts/Optic_Count
+docker build -t atlas-web:1.0.0 .
+
+# 3. Create the Kind cluster
+kind create cluster --name kind
+
+# 4. Load the image into Kind
+kind load docker-image atlas-web:1.0.0
+
+# 5. Deploy with Helm
+helm install atlas ./helm/atlas -f values-local.yaml
+
+# 6. Wait for pods (Ctrl+C when all show Running)
+kubectl get pods -w
+
+# 7. Port forward
+kubectl port-forward svc/atlas-atlas-web 5050:5050
+```
+
+Browse to `http://localhost:5050`. Default PIN: `123456`
+
+## Quick Rebuild (code changes only)
+
+```bash
+cd ~/Atlas/DCT_Scripts/Optic_Count
+docker build -t atlas-web:1.0.0 .
+kind load docker-image atlas-web:1.0.0
+kubectl rollout restart deployment atlas-atlas-web
+kubectl port-forward svc/atlas-atlas-web 5050:5050
+```
+
+Hard refresh the browser (Cmd+Shift+R) after port-forward reconnects.
+
+## Loading Cutsheets into Postgres
+
+```bash
+kubectl exec -it deploy/atlas-atlas-web -- \
+  python atlas_data_loader.py --file /app/uploads/QNC01.xlsx --site QCY
+
+kubectl exec -it deploy/atlas-atlas-web -- \
+  python atlas_data_loader.py --file /app/uploads/ELD01.xlsx --site ELD
+```
+
+Verify:
+```bash
+kubectl exec -it atlas-atlas-postgres-0 -- \
+  psql -U atlas -d atlas -c "SELECT site_code, count(*) FROM devices GROUP BY site_code;"
+```
+
+## Useful Debug Commands
+
+```bash
+kubectl get pods
+kubectl logs <pod-name> --tail=50 -c web
+curl http://localhost:5050/api/health
+kubectl describe pod <pod-name>
+kubectl get events --sort-by='.lastTimestamp' | tail -20
+```
+
+## Full Teardown
+
+```bash
+helm uninstall atlas
+kubectl delete pvc -l app.kubernetes.io/instance=atlas   # wipes the DB
+kind delete cluster
+```
+
+## Troubleshooting
+
+**`ErrImageNeverPull`:** Image not loaded into Kind. Run `kind load docker-image atlas-web:1.0.0` again.
+
+**`secrets.dbPassword must be set`:** Use `helm install atlas ./helm/atlas -f values-local.yaml`.
+
+**`secrets.demoTokenSecret must be set to a 32+ byte hex string`:** Generate with `openssl rand -hex 32` and paste the output — don't use a shell command in the values file.
+
+**Port-forward dies after rollout restart:** Expected. Run `kubectl port-forward svc/atlas-atlas-web 5050:5050` again.
+
+**Browser stuck on "Processing...":** Check pod logs for tracebacks. If logs only show health checks, the port-forward is dead. Restart it.
+
+**No nodes found for cluster "kind":** Run `kind create cluster --name kind` first.
+
+## Note on Local Docker Compose
+
+For local development (not Kubernetes), use `docker compose up -d --build` instead. See terminal_notes.md for docker compose workflow details. The Kind/Helm path above is for staging/production deploys.

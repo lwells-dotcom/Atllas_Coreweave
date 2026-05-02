@@ -58,6 +58,8 @@ CREATE INDEX IF NOT EXISTS idx_cc_site ON cutsheet_connections(site_id);
 CREATE INDEX IF NOT EXISTS idx_cc_upload ON cutsheet_connections(upload_id);
 CREATE INDEX IF NOT EXISTS idx_cc_a_device ON cutsheet_connections(a_device);
 CREATE INDEX IF NOT EXISTS idx_cc_z_device ON cutsheet_connections(z_device);
+CREATE INDEX IF NOT EXISTS idx_cc_a_device_lower ON cutsheet_connections (upload_id, LOWER(TRIM(a_device)));
+CREATE INDEX IF NOT EXISTS idx_cc_z_device_lower ON cutsheet_connections (upload_id, LOWER(TRIM(z_device)));
 CREATE INDEX IF NOT EXISTS idx_cc_a_model ON cutsheet_connections(a_model);
 CREATE INDEX IF NOT EXISTS idx_cc_z_model ON cutsheet_connections(z_model);
 CREATE INDEX IF NOT EXISTS idx_cc_status ON cutsheet_connections(status);
@@ -170,6 +172,7 @@ ALTER TABLE host_inventory ADD COLUMN IF NOT EXISTS row_type TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_hi_site ON host_inventory(site_id);
 CREATE INDEX IF NOT EXISTS idx_hi_hostname ON host_inventory(hostname);
+CREATE INDEX IF NOT EXISTS idx_hi_hostname_lower ON host_inventory (upload_id, LOWER(TRIM(hostname)));
 CREATE INDEX IF NOT EXISTS idx_hi_model ON host_inventory(model);
 -- W14: Missing indexes for cable_type, location, and role queries
 CREATE INDEX IF NOT EXISTS idx_cc_cable_type ON cutsheet_connections(cable_type)
@@ -262,7 +265,7 @@ SELECT
     site_id,
     site_code,
     device_name,
-    MODE() WITHIN GROUP (ORDER BY model) FILTER (WHERE model IS NOT NULL AND model != '' AND model != 'nan') AS model,
+    MAX(model) FILTER (WHERE model IS NOT NULL AND model != '' AND model != 'nan') AS model,
     COUNT(*) AS connection_count,
     COUNT(DISTINCT port) AS port_count
 FROM (
@@ -323,3 +326,101 @@ BEGIN
     RETURN last_upload > last_refresh;
 END;
 $$ LANGUAGE plpgsql;
+
+-- ============================================================================
+-- NetBox Dashboard tables
+-- Snapshot-based view of devices and interfaces in DH 201-204 (Ellendale).
+-- DH202/204 live in us-central-08a (Heron); DH201/203 live in us-central-08b
+-- (Phoenix). Background ingestion writes a new snapshot every 15 minutes; the
+-- dashboard reads the latest snapshot row joined to its devices/interfaces.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS netbox_snapshots (
+    id              SERIAL PRIMARY KEY,
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at     TIMESTAMPTZ,
+    status          TEXT NOT NULL DEFAULT 'running',  -- running | ok | failed
+    error_message   TEXT,
+    device_count    INTEGER DEFAULT 0,
+    interface_count INTEGER DEFAULT 0,
+    optic_count     INTEGER DEFAULT 0,
+    site_count      INTEGER DEFAULT 0,
+    sites_failed    INTEGER DEFAULT 0,
+    sites_json      JSONB,                            -- per-site row counts [{slug, devices, interfaces, optics}]
+    duration_ms     INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_netbox_snapshots_status ON netbox_snapshots(status);
+CREATE INDEX IF NOT EXISTS idx_netbox_snapshots_finished ON netbox_snapshots(finished_at DESC);
+
+CREATE TABLE IF NOT EXISTS netbox_devices (
+    id              SERIAL PRIMARY KEY,
+    snapshot_id     INTEGER NOT NULL REFERENCES netbox_snapshots(id) ON DELETE CASCADE,
+    site            TEXT NOT NULL,            -- us-central-08a | us-central-08b
+    location_slug   TEXT NOT NULL,            -- dh201 | dh202 | dh203 | dh204
+    rack            TEXT,
+    position        INTEGER,
+    name            TEXT,
+    model           TEXT,
+    serial          TEXT,
+    status          TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_netbox_devices_snapshot ON netbox_devices(snapshot_id);
+CREATE INDEX IF NOT EXISTS idx_netbox_devices_dh ON netbox_devices(snapshot_id, location_slug);
+CREATE INDEX IF NOT EXISTS idx_netbox_devices_model ON netbox_devices(snapshot_id, model);
+
+CREATE TABLE IF NOT EXISTS netbox_interfaces (
+    id              SERIAL PRIMARY KEY,
+    snapshot_id     INTEGER NOT NULL REFERENCES netbox_snapshots(id) ON DELETE CASCADE,
+    site            TEXT NOT NULL,
+    location_slug   TEXT NOT NULL,
+    rack            TEXT,
+    position        INTEGER,
+    device_name     TEXT,
+    interface_name  TEXT,
+    type_enum       TEXT,                     -- raw NetBox enum, e.g. TYPE_400GE_QSFP_DD
+    type_label      TEXT,                     -- friendly label, e.g. 400GE (QSFP-DD)
+    type_category   TEXT,                     -- Ethernet (Optical) | InfiniBand | etc.
+    device_status   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_netbox_interfaces_snapshot ON netbox_interfaces(snapshot_id);
+CREATE INDEX IF NOT EXISTS idx_netbox_interfaces_dh ON netbox_interfaces(snapshot_id, location_slug);
+CREATE INDEX IF NOT EXISTS idx_netbox_interfaces_type ON netbox_interfaces(snapshot_id, type_enum);
+
+-- Physical optic/transceiver inventory from NetBox inventory_item_list,
+-- filtered by name patterns: sfp, qsfp, osfp, transceiver, xcvr, optic.
+CREATE TABLE IF NOT EXISTS netbox_optics (
+    id              SERIAL PRIMARY KEY,
+    snapshot_id     INTEGER NOT NULL REFERENCES netbox_snapshots(id) ON DELETE CASCADE,
+    site            TEXT NOT NULL,
+    location_slug   TEXT NOT NULL,
+    device_name     TEXT,
+    name            TEXT,        -- inventory item name (e.g. "QSFP-DD 400G SR8")
+    part_id         TEXT,
+    serial          TEXT,
+    manufacturer    TEXT,
+    description     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_netbox_optics_snapshot ON netbox_optics(snapshot_id);
+CREATE INDEX IF NOT EXISTS idx_netbox_optics_dh ON netbox_optics(snapshot_id, location_slug);
+CREATE INDEX IF NOT EXISTS idx_netbox_optics_name ON netbox_optics(snapshot_id, name);
+
+-- Migrations: add new columns to existing deployments (safe to re-run)
+ALTER TABLE netbox_snapshots ADD COLUMN IF NOT EXISTS optic_count   INTEGER DEFAULT 0;
+ALTER TABLE netbox_snapshots ADD COLUMN IF NOT EXISTS site_count    INTEGER DEFAULT 0;
+ALTER TABLE netbox_snapshots ADD COLUMN IF NOT EXISTS sites_failed  INTEGER DEFAULT 0;
+ALTER TABLE netbox_snapshots ADD COLUMN IF NOT EXISTS sites_json    JSONB;
+
+-- View: most recent successful snapshot id (used by dashboard endpoints)
+CREATE OR REPLACE VIEW netbox_latest_snapshot AS
+SELECT id, started_at, finished_at, status,
+       device_count, interface_count, optic_count,
+       site_count, sites_failed, sites_json,
+       duration_ms
+FROM netbox_snapshots
+WHERE status = 'ok'
+ORDER BY finished_at DESC
+LIMIT 1;

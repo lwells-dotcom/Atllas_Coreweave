@@ -20,6 +20,7 @@ COPY --from=builder /install /usr/local
 # Copy application code
 COPY *.py ./
 COPY atlas_schema.sql ./
+COPY netbox_dashboard.html ./
 
 # Create upload directory
 RUN mkdir -p /app/uploads && chown -R atlas:atlas /app
@@ -35,13 +36,13 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # Single worker keeps USER_CONTEXT/USER_SITE in one process (no cross-worker
 # state isolation). Threads share memory safely under _state_lock. Atlas is
 # I/O bound (Postgres + LLM API), so threads give equivalent throughput.
-# Timeout bumped from 60s to handle large cutsheet uploads (19MB+ workbooks
-# with many tabs can exceed the default parse window).
+# Timeout for large cutsheet uploads (19MB+ workbooks) plus combined
+# preprocessor + optional in-service sort + Postgres ingest in one request.
 CMD ["gunicorn", \
      "--bind", "0.0.0.0:5050", \
      "--workers", "1", \
      "--threads", "4", \
-     "--timeout", "180", \
+     "--timeout", "300", \
      "--access-logfile", "-", \
      "--error-logfile", "-", \
      "atlas_web_app:app"]

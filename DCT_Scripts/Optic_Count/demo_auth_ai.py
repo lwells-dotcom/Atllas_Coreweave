@@ -491,6 +491,8 @@ def _build_grounded_messages(question: str, sheet_context: Dict[str, Any]) -> Li
             meta_parts.append(f"Query type: {trimmed['question_type']}")
         if trimmed.get("confidence"):
             meta_parts.append(f"Confidence: {trimmed['confidence']}")
+        if trimmed.get("site_code"):
+            meta_parts.append(f"Site: {trimmed['site_code']} (all results are scoped to this site)")
         meta_str = "\n".join(meta_parts)
         user_content = (
             f"Question: {question}\n\n"

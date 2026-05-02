@@ -1,0 +1,7 @@
+# Optional extras for local development only — not installed in the Docker image.
+# After runtime deps: pip install -r requirements-dev.txt
+#
+-r requirements.txt
+
+pytest>=8.0,<9.0
+graphifyy==0.4.23

@@ -49,7 +49,7 @@ log = logging.getLogger(__name__)
 # or paying parse cost on dead weight.
 _SKIP_SHEET_PATTERNS = (
     re.compile(r"\bbackup\b", re.IGNORECASE),
-    re.compile(r"^copy of\b", re.IGNORECASE),
+    re.compile(r"^copy[\s_]of[\s_]", re.IGNORECASE),  # matches "Copy of X" and "COPY_OF_X"
     re.compile(r"^sheet\d+$", re.IGNORECASE),
     re.compile(r"^legend(-|_|$)", re.IGNORECASE),
     re.compile(r"^overhead$", re.IGNORECASE),
@@ -542,15 +542,21 @@ def load_cutsheet(conn, upload_id: int, site_id: int, df: pd.DataFrame) -> int:
     return n_inserted
 
 
-def load_site_hosts(conn, upload_id: int, site_id: int, df: pd.DataFrame) -> int:
+def load_site_hosts(conn, upload_id: int, site_id: int, df: pd.DataFrame,
+                    profile=None) -> int:
     """
     Load host inventory DataFrame into host_inventory table.
     Applies profile canonicalization if available.
+
+    profile: pass the already-detected cutsheet profile so the host_columns
+    mapping (e.g. DNS-A-RECORD -> HOSTNAME) is applied even though
+    detect_profile() can't fingerprint a SITE-HOSTS sheet directly.
+
     Returns number of rows inserted.
     """
     profile_used = None
     if HAS_PROFILES:
-        df, profile_used = canonicalize(df, sheet_type="hosts")
+        df, profile_used = canonicalize(df, sheet_type="hosts", profile=profile)
         missing = _REQUIRED_HOST_COLS - set(df.columns)
         if missing:
             raise ValueError(
@@ -792,7 +798,7 @@ def load_file(file_path: str, site_code: str, uploaded_by: str = "") -> Dict[str
             if file_path.lower().endswith(".csv"):
                 df = pd.read_csv(file_path)
             else:
-                xls = pd.ExcelFile(file_path)
+                xls = pd.ExcelFile(file_path, engine="calamine")
                 # Filter backups/copies/legends before we do anything else.
                 active_sheets = [s for s in xls.sheet_names if not _should_skip_sheet(s)]
                 if len(active_sheets) != len(xls.sheet_names):
@@ -941,7 +947,10 @@ def load_file(file_path: str, site_code: str, uploaded_by: str = "") -> Dict[str
                     for sn in active_sheets:
                         if sn.strip().casefold() in ("site-hosts", "hosts", "host inventory", "devices"):
                             host_df = pd.read_excel(xls, sheet_name=sn)
-                            hosts_loaded = load_site_hosts(conn, upload_id, site_id, host_df)
+                            hosts_loaded = load_site_hosts(
+                                conn, upload_id, site_id, host_df,
+                                profile=detected_profile,
+                            )
                             break
                     with conn.cursor() as _cur:
                         _cur.execute("RELEASE SAVEPOINT sp_hosts")
@@ -949,21 +958,6 @@ def load_file(file_path: str, site_code: str, uploaded_by: str = "") -> Dict[str
                     with conn.cursor() as _cur:
                         _cur.execute("ROLLBACK TO SAVEPOINT sp_hosts")
                     log.warning("Host loading failed: %s", exc)
-
-            # H8: Backfill device roles from host_inventory into cutsheet_connections.
-            # Only useful when a SITE-HOSTS tab was present and actually loaded rows.
-            roles_backfilled: Dict[str, int] = {"a_updated": 0, "z_updated": 0}
-            if hosts_loaded > 0:
-                with conn.cursor() as _cur:
-                    _cur.execute("SAVEPOINT sp_roles")
-                try:
-                    roles_backfilled = backfill_device_roles(conn, upload_id, site_id)
-                    with conn.cursor() as _cur:
-                        _cur.execute("RELEASE SAVEPOINT sp_roles")
-                except Exception as exc:
-                    with conn.cursor() as _cur:
-                        _cur.execute("ROLLBACK TO SAVEPOINT sp_roles")
-                    log.warning("Role backfill failed (non-fatal): %s", exc)
 
             # Try loading BURNDOWN tab if present (reuse xls from above)
             burndown_loaded = 0
@@ -984,26 +978,45 @@ def load_file(file_path: str, site_code: str, uploaded_by: str = "") -> Dict[str
                         _cur.execute("ROLLBACK TO SAVEPOINT sp_burndown")
                     log.warning("Burndown loading failed (non-fatal): %s", exc)
 
-            # Single commit for all data (essential + optional helpers)
+            # Commit all essential data before running optional post-processing.
+            # backfill_device_roles runs in its own connection so that if the
+            # process dies during the (potentially slow) UPDATE, the lock is
+            # scoped to the backfill transaction only and cannot block new uploads.
             conn.commit()
 
-            # Refresh materialized views (has its own commit)
+        # H8: Backfill device roles in a separate transaction after the main commit.
+        # Running this inside the main transaction held locks on cutsheet_connections
+        # that could outlive the container process and block all subsequent uploads.
+        roles_backfilled: Dict[str, int] = {"a_updated": 0, "z_updated": 0}
+        if hosts_loaded > 0:
             try:
-                refresh_views(conn)
+                with managed_connection() as _bc:
+                    roles_backfilled = backfill_device_roles(_bc, upload_id, site_id)
+                    _bc.commit()
             except Exception as exc:
-                log.warning("View refresh failed: %s", exc)
+                log.warning("Role backfill failed (non-fatal): %s", exc)
 
-            return {
-                "ok": True,
-                "site_id": site_id,
-                "site_code": site_code,
-                "upload_id": upload_id,
-                "connections_loaded": rows_loaded,
-                "hosts_loaded": hosts_loaded,
-                "burndown_loaded": burndown_loaded,
-                "roles_backfilled": roles_backfilled,
-                "profile": profile_to_dict(detected_profile) if HAS_PROFILES and detected_profile else None,
-            }
+        # Refresh materialized views in background so the upload response
+        # isn't blocked by the (potentially slow) view rebuild.
+        def _bg_refresh():
+            try:
+                with managed_connection() as _conn:
+                    refresh_views(_conn)
+            except Exception as exc:
+                log.warning("View refresh failed (background): %s", exc)
+        threading.Thread(target=_bg_refresh, daemon=True).start()
+
+        return {
+            "ok": True,
+            "site_id": site_id,
+            "site_code": site_code,
+            "upload_id": upload_id,
+            "connections_loaded": rows_loaded,
+            "hosts_loaded": hosts_loaded,
+            "burndown_loaded": burndown_loaded,
+            "roles_backfilled": roles_backfilled,
+            "profile": profile_to_dict(detected_profile) if HAS_PROFILES and detected_profile else None,
+        }
     except Exception as exc:
         log.exception("load_file failed")
         return {"ok": False, "error": _safe_error(exc)}

@@ -357,6 +357,14 @@ def route_location_intent(ctx: QuestionContext) -> Optional[IntentResult]:
                                 "data hall + location (unambiguous reference)",
                                 "location", [ctx.extracted_data_hall, ctx.extracted_location])
 
+    # "what racks are [in/at] [this location/here]?" with no specific location
+    # extracted → user wants a list of racks at the site, not devices inside one rack.
+    # rack_summary with empty location_filter returns all racks for the site.
+    if loc_hits & {"rack", "racks"} and lookup_hits and not ctx.extracted_location:
+        return IntentResult("rack_summary", "medium",
+                            "rack list question with no specific location → site-wide rack summary",
+                            "location", sorted(loc_hits & {"rack", "racks"}))
+
     # Rack/cabinet + list/show/what/on/in/overview/detail -> location_lookup
     if loc_hits and lookup_hits:
         return IntentResult("location_lookup", "medium",

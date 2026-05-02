@@ -239,6 +239,7 @@ PROFILE_STANDARD_V1 = CutsheetProfile(
         "Role": Canon.HOST_ROLE,                   # production column
         "ROLE": Canon.HOST_ROLE,                   # fallback; lower priority
         "ROW:TYPE": Canon.HOST_ROW_TYPE,           # physical placement, NOT functional role
+        "LOC:ROW:TYPE": Canon.HOST_ROW_TYPE,       # OBG01+ variant with LOC: prefix
         "LOC:CAB:RU": Canon.HOST_RACK,             # production column
         "Rack": Canon.HOST_RACK,                   # fallback; lower priority
         "LOCODE": Canon.HOST_LOCODE,
@@ -263,6 +264,7 @@ PROFILE_STANDARD_V1 = CutsheetProfile(
         "CURRENT-NEIGHBOR-PORT": Canon.BD_CURRENT_NEIGHBOR_PORT,
         "CUTSHEET Row": Canon.BD_CUTSHEET_ROW,
         "Cutsheet Row": Canon.BD_CUTSHEET_ROW,
+        "CUTSHEET-ROW": Canon.BD_CUTSHEET_ROW,     # OBG01+ all-caps hyphen variant
         "DCT notes/fixes": Canon.BD_DCT_NOTES,
         "DCT notes": Canon.BD_DCT_NOTES,
         "NetEng notes": Canon.BD_NETENG_NOTES,
@@ -434,6 +436,9 @@ def apply_profile(df: pd.DataFrame, profile: CutsheetProfile, sheet_type: str = 
                     "canonicalization skipped for this sheet type",
                     profile.name, sheet_type)
         return df
+
+    # Normalize column headers: collapse newlines (Excel cell-wrap) to spaces
+    df.columns = [str(c).replace("\n", " ").strip() for c in df.columns]
 
     # Build case-insensitive rename map
     rename_map = {}

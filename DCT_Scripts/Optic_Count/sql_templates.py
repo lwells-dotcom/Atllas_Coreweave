@@ -12,9 +12,62 @@ _SQL_TEMPLATES: Dict[str, str] = {
     # B11: UNION ALL per-side aggregation. Counts each optic on the side it
     # actually appears on. Mixed-optic cables (A=X, Z=Y) count once for each
     # optic type instead of being silently grouped under the A-side optic.
-    # cable_count = total optic instances (a_count + z_count).
-    # Status counts are per-optic-instance, not per-cable.
+    # cable_count = total physical optic instances (a_count + z_count).
+    # Status counts are per-physical-optic, not per-connection-row.
+    #
+    # Breakout deduplication: a single QSFPDD in a 4-way breakout generates
+    # 4 connection rows in the DB (one per fan-out fiber) but is one physical
+    # optic. We deduplicate A-side breakouts by (upload_id, a_loc_cab_ru,
+    # a_port) and Z-side breakouts by (upload_id, z_loc_cab_ru, z_port),
+    # keeping the lowest-id row (first in the sheet) to preserve its status.
+    # Non-breakout rows are already 1:1 with physical optics.
     "optic_count": """
+        WITH a_deduped AS (
+            SELECT a_optic AS optic_type, 'A' AS side, status_normalized
+            FROM (
+                SELECT
+                    a_optic, status_normalized,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY
+                            CASE WHEN a_breakout_loc IS NOT NULL AND a_breakout_loc != ''
+                                 THEN upload_id::text || '|' || COALESCE(a_loc_cab_ru, '') || '|' || COALESCE(a_port, '')
+                                 ELSE id::text
+                            END
+                        ORDER BY id
+                    ) AS rn
+                FROM cutsheet_connections
+                WHERE site_id = %(site_id)s
+                  AND (%(upload_id)s::bigint IS NULL OR upload_id = %(upload_id)s::bigint)
+                  AND a_optic IS NOT NULL AND a_optic != '' AND a_optic != 'nan'
+                  AND (%(optic_filter)s = '' OR a_optic ILIKE %(optic_filter)s)
+                  AND (%(section_filter)s = '' OR section ILIKE %(section_filter)s)
+                  AND (%(location_filter)s = '' OR a_loc_cab_ru ILIKE %(location_filter)s
+                       OR z_loc_cab_ru ILIKE %(location_filter)s)
+            ) t WHERE rn = 1
+        ),
+        z_deduped AS (
+            SELECT z_optic AS optic_type, 'Z' AS side, status_normalized
+            FROM (
+                SELECT
+                    z_optic, status_normalized,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY
+                            CASE WHEN z_breakout_loc IS NOT NULL AND z_breakout_loc != ''
+                                 THEN upload_id::text || '|' || COALESCE(z_loc_cab_ru, '') || '|' || COALESCE(z_port, '')
+                                 ELSE id::text
+                            END
+                        ORDER BY id
+                    ) AS rn
+                FROM cutsheet_connections
+                WHERE site_id = %(site_id)s
+                  AND (%(upload_id)s::bigint IS NULL OR upload_id = %(upload_id)s::bigint)
+                  AND z_optic IS NOT NULL AND z_optic != '' AND z_optic != 'nan'
+                  AND (%(optic_filter)s = '' OR z_optic ILIKE %(optic_filter)s)
+                  AND (%(section_filter)s = '' OR section ILIKE %(section_filter)s)
+                  AND (%(location_filter)s = '' OR a_loc_cab_ru ILIKE %(location_filter)s
+                       OR z_loc_cab_ru ILIKE %(location_filter)s)
+            ) t WHERE rn = 1
+        )
         SELECT
             optic_type,
             a_count + z_count                                              AS cable_count,
@@ -34,25 +87,9 @@ _SQL_TEMPLATES: Dict[str, str] = {
                 COUNT(*) FILTER (WHERE status_normalized IN
                     ('not_run', 'not_terminated', 'pending', 'in_progress', 'addition')) AS pending
             FROM (
-                SELECT a_optic AS optic_type, 'A' AS side, status_normalized
-                FROM cutsheet_connections
-                WHERE site_id = %(site_id)s
-                  AND (%(upload_id)s::bigint IS NULL OR upload_id = %(upload_id)s::bigint)
-                  AND a_optic IS NOT NULL AND a_optic != '' AND a_optic != 'nan'
-                  AND (%(optic_filter)s = '' OR a_optic ILIKE %(optic_filter)s)
-                  AND (%(section_filter)s = '' OR section ILIKE %(section_filter)s)
-                  AND (%(location_filter)s = '' OR a_loc_cab_ru ILIKE %(location_filter)s
-                       OR z_loc_cab_ru ILIKE %(location_filter)s)
+                SELECT * FROM a_deduped
                 UNION ALL
-                SELECT z_optic AS optic_type, 'Z' AS side, status_normalized
-                FROM cutsheet_connections
-                WHERE site_id = %(site_id)s
-                  AND (%(upload_id)s::bigint IS NULL OR upload_id = %(upload_id)s::bigint)
-                  AND z_optic IS NOT NULL AND z_optic != '' AND z_optic != 'nan'
-                  AND (%(optic_filter)s = '' OR z_optic ILIKE %(optic_filter)s)
-                  AND (%(section_filter)s = '' OR section ILIKE %(section_filter)s)
-                  AND (%(location_filter)s = '' OR a_loc_cab_ru ILIKE %(location_filter)s
-                       OR z_loc_cab_ru ILIKE %(location_filter)s)
+                SELECT * FROM z_deduped
             ) sides
             GROUP BY optic_type
         ) sub
@@ -440,6 +477,22 @@ _SQL_TEMPLATES: Dict[str, str] = {
             FROM endpoint_rows
             GROUP BY rack_loc
         ),
+        optic_type_counts AS (
+            SELECT
+                rack_loc,
+                optic,
+                COUNT(*) AS cnt
+            FROM endpoint_rows
+            WHERE optic IS NOT NULL AND optic != '' AND optic != 'nan'
+            GROUP BY rack_loc, optic
+        ),
+        optic_breakdown_agg AS (
+            SELECT
+                rack_loc,
+                STRING_AGG(optic || ': ' || cnt::text, ', ' ORDER BY cnt DESC) AS optic_breakdown
+            FROM optic_type_counts
+            GROUP BY rack_loc
+        ),
         site_totals AS (
             SELECT
                 COUNT(DISTINCT rack_loc) AS total_racks,
@@ -453,9 +506,11 @@ _SQL_TEMPLATES: Dict[str, str] = {
             r.models,
             r.optics,
             r.optic_count,
+            ob.optic_breakdown,
             s.total_racks,
             s.site_unique_connections
         FROM rack_agg r
+        LEFT JOIN optic_breakdown_agg ob ON ob.rack_loc = r.loc_cab_ru
         CROSS JOIN site_totals s
         ORDER BY r.connections DESC, r.loc_cab_ru
         LIMIT 50
@@ -634,26 +689,73 @@ _SQL_TEMPLATES: Dict[str, str] = {
         ORDER BY model, site_code
     """,
 
+    # Per-side UNION ALL mirrors the optic_count template so mixed-optic cables
+    # (A=OSFP-800G, Z=QSFP112-400G) count once for each optic type instead of
+    # being collapsed to only the A-side optic via COALESCE.
     "cross_site_optics": """
+        WITH a_deduped AS (
+            SELECT t.a_optic AS optic_type, s.site_code, t.status_normalized
+            FROM (
+                SELECT
+                    cc.a_optic, cc.status_normalized, cc.upload_id, cc.site_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY
+                            cc.site_id,
+                            CASE WHEN cc.a_breakout_loc IS NOT NULL AND cc.a_breakout_loc != ''
+                                 THEN cc.upload_id::text || '|' || COALESCE(cc.a_loc_cab_ru, '') || '|' || COALESCE(cc.a_port, '')
+                                 ELSE cc.id::text
+                            END
+                        ORDER BY cc.id
+                    ) AS rn
+                FROM cutsheet_connections cc
+                JOIN cutsheet_uploads cu ON cc.upload_id = cu.id
+                WHERE cu.is_active = TRUE
+                  AND cc.a_optic IS NOT NULL AND cc.a_optic != '' AND cc.a_optic != 'nan'
+            ) t
+            JOIN sites s ON t.site_id = s.id
+            WHERE t.rn = 1
+              AND (%(site_codes)s::text[] IS NULL OR s.site_code = ANY(%(site_codes)s::text[]))
+        ),
+        z_deduped AS (
+            SELECT t.z_optic AS optic_type, s.site_code, t.status_normalized
+            FROM (
+                SELECT
+                    cc.z_optic, cc.status_normalized, cc.upload_id, cc.site_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY
+                            cc.site_id,
+                            CASE WHEN cc.z_breakout_loc IS NOT NULL AND cc.z_breakout_loc != ''
+                                 THEN cc.upload_id::text || '|' || COALESCE(cc.z_loc_cab_ru, '') || '|' || COALESCE(cc.z_port, '')
+                                 ELSE cc.id::text
+                            END
+                        ORDER BY cc.id
+                    ) AS rn
+                FROM cutsheet_connections cc
+                JOIN cutsheet_uploads cu ON cc.upload_id = cu.id
+                WHERE cu.is_active = TRUE
+                  AND cc.z_optic IS NOT NULL AND cc.z_optic != '' AND cc.z_optic != 'nan'
+            ) t
+            JOIN sites s ON t.site_id = s.id
+            WHERE t.rn = 1
+              AND (%(site_codes)s::text[] IS NULL OR s.site_code = ANY(%(site_codes)s::text[]))
+        )
         SELECT optic_type, site_code, cable_count, in_service, failed, pending
         FROM (
             SELECT
-                COALESCE(NULLIF(a_optic, ''), NULLIF(z_optic, '')) AS optic_type,
-                s.site_code,
-                COUNT(*) AS cable_count,
+                optic_type,
+                site_code,
+                COUNT(*)                                                    AS cable_count,
                 COUNT(*) FILTER (WHERE status_normalized IN
-                    ('lldp_passed', 'human_verified', 'complete')) AS in_service,
-                COUNT(*) FILTER (WHERE status_normalized = 'lldp_failed') AS failed,
+                    ('lldp_passed', 'human_verified', 'complete'))          AS in_service,
+                COUNT(*) FILTER (WHERE status_normalized = 'lldp_failed')   AS failed,
                 COUNT(*) FILTER (WHERE status_normalized IN
                     ('not_run', 'not_terminated', 'pending', 'in_progress', 'addition')) AS pending
-            FROM cutsheet_connections cc
-            JOIN cutsheet_uploads cu ON cc.upload_id = cu.id
-            JOIN sites s ON cc.site_id = s.id
-            WHERE cu.is_active = TRUE
-              AND (%(site_codes)s::text[] IS NULL OR s.site_code = ANY(%(site_codes)s::text[]))
-              AND COALESCE(NULLIF(a_optic, ''), NULLIF(z_optic, '')) IS NOT NULL
-              AND COALESCE(NULLIF(a_optic, ''), NULLIF(z_optic, '')) != 'nan'
-            GROUP BY COALESCE(NULLIF(a_optic, ''), NULLIF(z_optic, '')), s.site_code
+            FROM (
+                SELECT * FROM a_deduped
+                UNION ALL
+                SELECT * FROM z_deduped
+            ) sides
+            GROUP BY optic_type, site_code
         ) sub
         ORDER BY optic_type, site_code
     """,

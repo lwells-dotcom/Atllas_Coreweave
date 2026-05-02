@@ -251,7 +251,7 @@ SELECT
     site_id,
     site_code,
     device_name,
-    MODE() WITHIN GROUP (ORDER BY model) FILTER (WHERE model IS NOT NULL AND model != '' AND model != 'nan') AS model,
+    MAX(model) FILTER (WHERE model IS NOT NULL AND model != '' AND model != 'nan') AS model,
     COUNT(*) AS connection_count,
     COUNT(DISTINCT port) AS port_count
 FROM (
@@ -302,3 +302,25 @@ BEGIN
     RETURN last_upload > last_refresh;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Migration: multi-site netbox snapshot tracking (no-op when netbox_snapshots absent)
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'netbox_snapshots'
+    ) THEN
+        ALTER TABLE netbox_snapshots ADD COLUMN IF NOT EXISTS site_count   INTEGER DEFAULT 0;
+        ALTER TABLE netbox_snapshots ADD COLUMN IF NOT EXISTS sites_failed INTEGER DEFAULT 0;
+        ALTER TABLE netbox_snapshots ADD COLUMN IF NOT EXISTS sites_json   JSONB;
+        EXECUTE $q$
+            CREATE OR REPLACE VIEW netbox_latest_snapshot AS
+            SELECT id, started_at, finished_at, status,
+                   device_count, interface_count, optic_count,
+                   site_count, sites_failed, duration_ms
+            FROM netbox_snapshots
+            WHERE status = 'ok'
+            ORDER BY finished_at DESC LIMIT 1
+        $q$;
+    END IF;
+END $$;

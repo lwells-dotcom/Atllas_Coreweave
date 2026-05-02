@@ -41,14 +41,14 @@ class LocationRackRoutingTests(unittest.TestCase):
     def test_build_location_pattern_scopes_partial_rack_queries(self):
         self.assertEqual(_build_location_pattern("dh202:041"), "dh202%:041:%")
         self.assertEqual(_build_location_pattern("dh2:041"), "dh2%:041:%")
-        self.assertEqual(_build_location_pattern("41"), None)
+        self.assertEqual(_build_location_pattern("41"), "%:041:%")
         self.assertEqual(_build_location_pattern("dh202"), "dh202%:%")
         self.assertEqual(_build_location_pattern("dh202:041:33"), "dh202:041:33")
         self.assertEqual(_build_location_pattern(""), "%__NO_LOCATION__%")
 
     def test_build_query_params_uses_scoped_location_pattern(self):
         params = build_query_params("What devices are in rack 41?", "location_lookup", 1)
-        self.assertEqual(params["location_pattern"], None)
+        self.assertEqual(params["location_pattern"], "%:041:%")
 
         params = build_query_params("What devices are in rack dh202:041?", "location_lookup", 1)
         self.assertEqual(params["location_pattern"], "dh202%:041:%")

@@ -72,9 +72,14 @@ Web UI: http://localhost:5050 — Postgres: localhost:9000 (mapped from containe
 **Run without Docker (dev mode):**
 ```bash
 cd Optic_Count
-pip install -r requirements.txt
+python3.11 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt   # same stack as the container
+# optional: pytest, graphifyy, etc.
+pip install -r requirements-dev.txt
 python atlas_web_app.py
 ```
+Use **`requirements.txt`** for parity with Docker; use **`requirements-dev.txt`** only on the host for tests and tooling.
 
 **Run a single test file:**
 ```bash

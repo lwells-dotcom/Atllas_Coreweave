@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CoreWeave NetBox — Live Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg-0: #07090d;
+    --bg-1: #0d1117;
+    --bg-2: #131a23;
+    --line: #1f2a37;
+    --line-soft: #1a2332;
+    --text: #e5e9f0;
+    --text-2: #cbd5e1;
+    --text-dim: #8a95a8;
+    --text-mute: #5b6577;
+    --accent: #5eead4;
+    --accent-2: #38bdf8;
+    --warn: #fbbf24;
+    --crit: #f87171;
+    --good: #34d399;
+    --max-w: 1500px;
+    --r-md: 10px;
+    --r-lg: 16px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    min-height: 100vh;
+    background:
+      radial-gradient(1200px 600px at 10% -10%, rgba(56,189,248,0.08), transparent 60%),
+      radial-gradient(1000px 500px at 110% 10%, rgba(94,234,212,0.06), transparent 60%),
+      var(--bg-0);
+    color: var(--text);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-feature-settings: 'cv11', 'ss01';
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  h1, h2, h3, p { margin: 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.875rem; }
+  button { font: inherit; cursor: pointer; }
+  svg { display: block; }
+
+  .container { max-width: var(--max-w); margin: 0 auto; padding: 0 24px; }
+  .stack > * + * { margin-top: 24px; }
+  .grid { display: grid; gap: 16px; }
+  .grid-5 { grid-template-columns: repeat(1, 1fr); }
+  .grid-3 { grid-template-columns: repeat(1, 1fr); }
+  @media (min-width: 768px) {
+    .grid-5 { grid-template-columns: repeat(3, 1fr); }
+    .grid-3 { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (min-width: 1100px) {
+    .grid-5 { grid-template-columns: repeat(5, 1fr); }
+    .grid-3 { grid-template-columns: repeat(3, 1fr); }
+    .col-span-2 { grid-column: span 2; }
+  }
+  .row { display: flex; align-items: center; }
+  .row.between { justify-content: space-between; }
+
+  /* Header */
+  .site-header {
+    position: sticky; top: 0; z-index: 30;
+    background: rgba(7, 9, 13, 0.85);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border-bottom: 1px solid rgba(31, 42, 55, 0.8);
+  }
+  .site-header .inner {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 24px;
+    max-width: var(--max-w); margin: 0 auto;
+  }
+  .brand { display: flex; align-items: center; gap: 16px; }
+  .brand-mark {
+    width: 36px; height: 36px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(94,234,212,0.18), rgba(56,189,248,0.18));
+    border: 1px solid rgba(94,234,212,0.3);
+    display: flex; align-items: center; justify-content: center;
+    color: #5eead4;
+  }
+  .brand-mark svg { width: 20px; height: 20px; }
+  .brand h1 { font-size: 1.0625rem; font-weight: 600; line-height: 1; }
+  .brand p  { font-size: 0.75rem; color: var(--text-dim); margin-top: 4px; }
+  .header-tools { display: flex; align-items: center; gap: 12px; }
+  .last-seen { font-size: 0.75rem; color: var(--text-dim); }
+
+  /* Panels */
+  .panel {
+    background: linear-gradient(180deg, rgba(19,26,35,0.85), rgba(13,17,23,0.85));
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    padding: 20px;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.03),
+      0 20px 40px -20px rgba(0,0,0,0.6);
+  }
+  .panel-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .panel-head h3 { font-size: 1rem; font-weight: 600; }
+  .panel-meta { font-size: 0.75rem; color: var(--text-dim); }
+
+  /* KPI tiles */
+  .kpi-label {
+    font-size: 0.75rem; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .kpi-num {
+    font-feature-settings: 'tnum';
+    letter-spacing: -0.02em;
+    font-weight: 700;
+    font-size: 2.25rem;
+    margin-top: 8px;
+  }
+  .kpi-num.sm { font-size: 1.875rem; }
+  .kpi-num.md { font-size: 1.5rem; font-weight: 600; display: flex; align-items: center; gap: 12px; }
+  .kpi-sub { font-size: 0.75rem; color: var(--text-dim); margin-top: 4px; }
+
+  /* Pills */
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 10px; border-radius: 999px;
+    font-size: 0.6875rem; font-weight: 600;
+    border: 1px solid var(--line);
+    background: rgba(255,255,255,0.02);
+    color: var(--text-dim);
+  }
+  .pill.ok    { color: #34d399; border-color: rgba(52,211,153,0.3);  background: rgba(52,211,153,0.08); }
+  .pill.warn  { color: #fbbf24; border-color: rgba(251,191,36,0.3);  background: rgba(251,191,36,0.08); }
+  .pill.crit  { color: #f87171; border-color: rgba(248,113,113,0.3); background: rgba(248,113,113,0.08); }
+
+  /* Location/site tags */
+  .dh-tag {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-weight: 600;
+    background: rgba(94,234,212,0.08);
+    color: var(--accent);
+    border: 1px solid rgba(94,234,212,0.25);
+    padding: 2px 8px; border-radius: 6px; font-size: 0.6875rem;
+  }
+
+  /* DH cards */
+  .dh-card .dh-body { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 0.875rem; }
+  .dh-card .dh-body .label { font-size: 0.6875rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; }
+  .dh-card .dh-body .value { font-weight: 600; margin-top: 4px; }
+  .divider { height: 1px; background: linear-gradient(90deg, transparent, var(--line), transparent); margin: 12px 0; }
+
+  /* Tables */
+  thead th {
+    font-size: 0.6875rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-dim);
+    text-align: left; padding: 8px 0;
+    position: sticky; top: 0;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  tbody td { padding: 8px 0; font-size: 0.75rem; border-top: 1px solid var(--line-soft); }
+  .num-right { text-align: right; }
+  .table-row:hover { background: rgba(255,255,255,0.02); }
+  .scroll-area { max-height: 320px; overflow-y: auto; }
+  .scroll-area::-webkit-scrollbar { width: 8px; }
+  .scroll-area::-webkit-scrollbar-thumb { background: #1e2937; border-radius: 4px; }
+
+  /* Buttons + select */
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: linear-gradient(180deg, #1a2332, #131a23);
+    color: var(--text);
+    border: 1px solid var(--line);
+    padding: 8px 14px;
+    border-radius: var(--r-md);
+    font-size: 0.8125rem; font-weight: 500;
+    transition: border-color .15s ease, color .15s ease;
+  }
+  .btn:hover { border-color: rgba(94,234,212,0.4); color: var(--accent); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn svg { width: 16px; height: 16px; }
+  select.btn {
+    appearance: auto;
+    padding-right: 28px;
+    min-width: 200px;
+    cursor: pointer;
+    color-scheme: dark;
+  }
+  select.btn option { background: #131a23; color: var(--text); }
+
+  /* Charts */
+  .chart-wrap { position: relative; height: 240px; }
+  .chart-wrap.tall { height: 320px; }
+
+  /* Pulse dot + skeleton */
+  .pulse-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--good);
+    box-shadow: 0 0 0 0 rgba(52,211,153,0.6);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(52,211,153,0.55); }
+    70%  { box-shadow: 0 0 0 8px rgba(52,211,153, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(52,211,153, 0); }
+  }
+  .skeleton {
+    background: linear-gradient(90deg, #131a23, #1a2332, #131a23);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s infinite;
+    height: 170px;
+  }
+  @keyframes shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  .section-head {
+    font-size: 0.8125rem; font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 0.08em;
+    margin-bottom: 12px;
+  }
+
+  /* Port utilization bar */
+  .util-bar-track {
+    height: 14px;
+    background: var(--line);
+    border-radius: 99px;
+    overflow: hidden;
+    margin: 14px 0 8px;
+  }
+  .util-bar-fill {
+    height: 100%;
+    border-radius: 99px;
+    transition: width .6s cubic-bezier(.4,0,.2,1), background .3s ease;
+  }
+  .util-bar-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+  }
+  .util-pct {
+    font-size: 2.25rem;
+    font-weight: 700;
+    font-feature-settings: 'tnum';
+    letter-spacing: -0.03em;
+    line-height: 1;
+    min-width: 90px;
+    transition: color .3s ease;
+  }
+
+  .footer {
+    text-align: center; font-size: 0.75rem;
+    color: var(--text-mute);
+    padding: 24px 0 32px;
+  }
+
+  .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+  main.container { padding-top: 32px; padding-bottom: 32px; }
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="inner">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+          <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+          <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+          <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+        </svg>
+      </div>
+      <div>
+        <h1>CoreWeave NetBox</h1>
+        <p id="brandSubtitle">Live infrastructure view · all sites</p>
+      </div>
+    </div>
+    <div class="header-tools">
+      <span id="liveDot" class="pulse-dot" title="Auto-refresh on"></span>
+      <span class="last-seen" id="lastSeen">Loading…</span>
+      <select id="siteSelect" class="btn" style="appearance:auto; padding-right:28px; min-width:200px;">
+        <option value="">All Sites</option>
+      </select>
+      <button class="btn" id="refreshBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="23 4 23 10 17 10"/>
+          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+        </svg>
+        <span>Refresh now</span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main class="container stack">
+
+  <!-- KPI tiles -->
+  <section class="grid grid-5">
+    <div class="panel">
+      <div class="kpi-label">Active Devices</div>
+      <div class="kpi-num" id="kpi-devices">—</div>
+      <div class="kpi-sub" id="kpi-devices-sub">across all locations</div>
+    </div>
+    <div class="panel">
+      <div class="kpi-label">Physical Interfaces</div>
+      <div class="kpi-num" id="kpi-ifaces">—</div>
+      <div class="kpi-sub" id="kpi-ifaces-sub">non-virtual</div>
+    </div>
+    <div class="panel">
+      <div class="kpi-label">Installed Optics</div>
+      <div class="kpi-num" id="kpi-optics">—</div>
+      <div class="kpi-sub" id="kpi-optics-sub">across all DH</div>
+    </div>
+    <div class="panel">
+      <div class="kpi-label">Last Snapshot</div>
+      <div class="kpi-num" id="kpi-age">—</div>
+      <div class="kpi-sub" id="kpi-age-sub">age</div>
+    </div>
+    <div class="panel">
+      <div class="kpi-label">Ingest Status</div>
+      <div class="kpi-num md" id="kpi-status">—</div>
+      <div class="kpi-sub" id="kpi-status-sub">duration</div>
+    </div>
+  </section>
+
+  <!-- Port utilization bar -->
+  <section>
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Port utilization</h3>
+        <span class="panel-meta" id="port-util-meta">physical ports · all locations</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:28px;">
+        <div class="util-pct" id="port-util-pct">—</div>
+        <div style="flex:1;">
+          <div class="util-bar-track">
+            <div class="util-bar-fill" id="portUtilBar" style="width:0%"></div>
+          </div>
+          <div class="util-bar-labels">
+            <span id="port-util-used">—</span>
+            <span id="port-util-total">—</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Per-location cards — auto-fill adapts to any number of locations -->
+  <section>
+    <h2 class="section-head">By location</h2>
+    <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));" id="dhCards">
+      <div class="panel skeleton"></div>
+      <div class="panel skeleton"></div>
+      <div class="panel skeleton"></div>
+      <div class="panel skeleton"></div>
+    </div>
+  </section>
+
+  <!-- Charts row -->
+  <section class="grid grid-3">
+    <div class="panel col-span-2">
+      <div class="panel-head">
+        <h3>Top device models</h3>
+        <span class="panel-meta">top 12 by count</span>
+      </div>
+      <div class="chart-wrap tall"><canvas id="modelsChart"></canvas></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Optic categories</h3>
+        <span class="panel-meta">interface families</span>
+      </div>
+      <div class="chart-wrap tall"><canvas id="categoryChart"></canvas></div>
+    </div>
+  </section>
+
+  <!-- Optic types + recent snapshots -->
+  <section class="grid grid-3">
+    <div class="panel col-span-2">
+      <div class="panel-head">
+        <h3>Optic types</h3>
+        <span class="panel-meta">top 15 by count</span>
+      </div>
+      <div class="chart-wrap tall"><canvas id="opticsChart"></canvas></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Recent snapshots</h3>
+        <span class="panel-meta">last 10 runs · Central Time</span>
+      </div>
+      <div class="scroll-area">
+        <table>
+          <thead>
+            <tr>
+              <th>When</th>
+              <th class="num-right">Devices</th>
+              <th class="num-right">Optics</th>
+              <th class="num-right">ms</th>
+              <th class="num-right">Status</th>
+            </tr>
+          </thead>
+          <tbody id="snapshotTable" class="mono"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Per-rack optic density -->
+  <section>
+    <h2 class="section-head">Per-rack optic density</h2>
+    <div class="panel">
+      <div class="scroll-area" style="max-height:400px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Rack</th>
+              <th>Location</th>
+              <th class="num-right">Optics</th>
+              <th class="num-right">Ports</th>
+              <th class="num-right">Fill</th>
+              <th style="width:130px;padding-left:10px;">Density</th>
+            </tr>
+          </thead>
+          <tbody id="rackDensityTable" class="mono"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    Monitoring <span id="footer-sites">—</span> sites ·
+    Auto-refreshes every 60s · Background ingest every 15 min ·
+    Pulled from coreweave.cloud.netboxapp.com
+  </footer>
+</main>
+
+<script>
+const REFRESH_MS = 60_000;
+const NUM = new Intl.NumberFormat();
+const TZ = "America/Chicago";
+
+let currentSite = "";
+let sitesLoaded = false;
+
+const dhDisplay = (slug) => {
+  const m = (slug || "").match(/(\d+)$/);
+  return m ? "DH" + m[1] : (slug || "—").toUpperCase();
+};
+
+const fmtAge = (iso) => {
+  if (!iso) return "—";
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m " + (s % 60).toString().padStart(2, "0") + "s";
+  return Math.floor(m / 60) + "h " + (m % 60) + "m";
+};
+
+const fmtClock = (iso) => {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString(undefined, {
+    month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    timeZone: TZ, timeZoneName: "short",
+  });
+};
+
+const fmtClockShort = (iso) => {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString(undefined, {
+    month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    timeZone: TZ,
+  });
+};
+
+async function fetchJSON(url, opts) {
+  const sep = url.includes("?") ? "&" : "?";
+  const fullUrl = currentSite ? url + sep + "site=" + encodeURIComponent(currentSite) : url;
+  const r = await fetch(fullUrl, opts);
+  if (!r.ok) throw new Error(url + " " + r.status);
+  return r.json();
+}
+
+let charts = {};
+
+function makeChart(id, type, data, options = {}) {
+  if (charts[id]) charts[id].destroy();
+  const ctx = document.getElementById(id).getContext("2d");
+  charts[id] = new Chart(ctx, {
+    type,
+    data,
+    options: Object.assign({
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: "#cbd5e1", font: { family: "Inter", size: 11 } } },
+        tooltip: {
+          backgroundColor: "#0d1117",
+          borderColor: "#1f2a37",
+          borderWidth: 1,
+          titleColor: "#e5e9f0",
+          bodyColor: "#cbd5e1",
+          padding: 10,
+        },
+      },
+      scales: (type === "bar" || type === "line") ? {
+        x: { ticks: { color: "#8a95a8", font: { family: "Inter", size: 11 } }, grid: { color: "#1a2332" } },
+        y: { ticks: { color: "#8a95a8", font: { family: "Inter", size: 11 } }, grid: { color: "#1a2332" }, beginAtZero: true },
+      } : undefined,
+    }, options),
+  });
+}
+
+const PALETTE = [
+  "#5eead4", "#38bdf8", "#a78bfa", "#fbbf24", "#f87171",
+  "#34d399", "#fb923c", "#f472b6", "#60a5fa", "#facc15",
+  "#22d3ee", "#c084fc", "#86efac", "#fda4af", "#93c5fd",
+];
+
+// ---- render functions ----
+
+function renderKPIs(s) {
+  const dev = s.snapshot.device_count ?? 0;
+  const ifa = s.snapshot.interface_count ?? 0;
+  document.getElementById("kpi-devices").textContent = NUM.format(dev);
+  document.getElementById("kpi-ifaces").textContent = NUM.format(ifa);
+  document.getElementById("kpi-age").textContent = fmtAge(s.snapshot.finished_at);
+  document.getElementById("kpi-age-sub").textContent = "at " + fmtClock(s.snapshot.finished_at);
+
+  const ms = s.snapshot.duration_ms ?? 0;
+  const lastStatus = (s.recent_snapshots || [])[0]?.status ?? "ok";
+  const pillCls = lastStatus === "ok" ? "ok" : (lastStatus === "running" ? "warn" : "crit");
+  document.getElementById("kpi-status").innerHTML =
+    '<span class="pill ' + pillCls + '">' + lastStatus.toUpperCase() + '</span>' +
+    '<span style="color:var(--text-dim);font-size:1rem;font-weight:500;">snapshot #' + s.snapshot.id + '</span>';
+  document.getElementById("kpi-status-sub").textContent = (ms / 1000).toFixed(2) + "s ingest";
+
+  const healthy = s.healthy_active_count ?? dev;
+  const pct = dev > 0 ? Math.round((healthy / dev) * 100) : 0;
+  const breakdown = Object.entries(s.status_counts || {}).map(([k, v]) => k + " " + v).join(" · ");
+  document.getElementById("kpi-devices-sub").textContent = pct + "% active · " + breakdown;
+  document.getElementById("lastSeen").textContent = "Updated " + fmtClock(s.snapshot.finished_at);
+
+  // Update dynamic subtitle to reflect current filter
+  const label = currentSite || "all sites";
+  document.getElementById("brandSubtitle").textContent = "Live infrastructure view · " + label;
+}
+
+function renderInstalledOptics(optics) {
+  document.getElementById("kpi-optics").textContent = NUM.format(optics.installed_count ?? 0);
+  const top = (optics.categories || [])[0];
+  document.getElementById("kpi-optics-sub").textContent = top
+    ? NUM.format(top.n) + " × " + top.category + " (top type)"
+    : "across all locations";
+}
+
+function renderPortUtil(optics) {
+  const { used = 0, total = 0 } = optics.port_utilization || {};
+  const pct = total > 0 ? (used / total * 100) : 0;
+  const color = pct >= 85 ? "var(--crit)" : pct >= 70 ? "var(--warn)" : "var(--good)";
+
+  const pctEl = document.getElementById("port-util-pct");
+  pctEl.textContent = pct.toFixed(1) + "%";
+  pctEl.style.color = color;
+
+  const fill = document.getElementById("portUtilBar");
+  fill.style.width = pct.toFixed(2) + "%";
+  fill.style.background = color;
+
+  document.getElementById("port-util-used").textContent = NUM.format(used) + " ports used";
+  document.getElementById("port-util-total").textContent = NUM.format(total) + " total";
+}
+
+function renderDHCards(byDh) {
+  const cards = byDh.map(d => {
+    const locTag = dhDisplay(d.dh || d.location_slug || "");
+    const siteMeta = d.site || "—";
+    return ''
+      + '<div class="panel dh-card">'
+      +   '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">'
+      +     '<span class="dh-tag">' + locTag + '</span>'
+      +     '<span class="panel-meta">' + siteMeta + '</span>'
+      +   '</div>'
+      +   '<div class="kpi-num sm">' + NUM.format(d.device_count) + '</div>'
+      +   '<div class="kpi-sub">devices</div>'
+      +   '<div class="divider"></div>'
+      +   '<div class="dh-body">'
+      +     '<div><div class="label">Interfaces</div><div class="value">' + NUM.format(d.interface_count) + '</div></div>'
+      +     '<div><div class="label">Racks</div><div class="value">' + NUM.format(d.rack_count) + '</div></div>'
+      +   '</div>'
+      + '</div>';
+  }).join("");
+  document.getElementById("dhCards").innerHTML = cards
+    || '<div class="panel" style="grid-column:1 / -1; color: var(--text-dim);">No location data yet.</div>';
+}
+
+function renderModels(devices) {
+  const top = devices.overall.slice(0, 12);
+  makeChart("modelsChart", "bar", {
+    labels: top.map(r => r.model),
+    datasets: [{
+      data: top.map(r => r.n),
+      backgroundColor: top.map((_, i) => PALETTE[i % PALETTE.length] + "cc"),
+      borderColor:     top.map((_, i) => PALETTE[i % PALETTE.length]),
+      borderWidth: 1, borderRadius: 6,
+    }],
+  }, {
+    indexAxis: "y",
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { color: "#8a95a8", font: { family: "Inter", size: 11 } }, grid: { color: "#1a2332" }, beginAtZero: true },
+      y: { ticks: { color: "#cbd5e1", font: { family: "Inter", size: 11 } }, grid: { display: false } },
+    },
+  });
+}
+
+function renderCategories(optics) {
+  const cats = optics.categories.slice(0, 8);
+  makeChart("categoryChart", "doughnut", {
+    labels: cats.map(r => r.category || "Other"),
+    datasets: [{
+      data: cats.map(r => r.n),
+      backgroundColor: cats.map((_, i) => PALETTE[i % PALETTE.length]),
+      borderColor: "#0d1117", borderWidth: 2,
+    }],
+  }, {
+    cutout: "62%",
+    plugins: {
+      legend: {
+        position: "bottom",
+        labels: { color: "#cbd5e1", font: { family: "Inter", size: 11 }, padding: 12, boxWidth: 10 },
+      },
+    },
+  });
+}
+
+function renderOptics(optics) {
+  const top = optics.overall.slice(0, 15);
+  makeChart("opticsChart", "bar", {
+    labels: top.map(r => r.label),
+    datasets: [{
+      data: top.map(r => r.n),
+      backgroundColor: top.map((_, i) => PALETTE[(i + 3) % PALETTE.length] + "cc"),
+      borderColor:     top.map((_, i) => PALETTE[(i + 3) % PALETTE.length]),
+      borderWidth: 1, borderRadius: 6,
+    }],
+  }, {
+    indexAxis: "y",
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { color: "#8a95a8", font: { family: "Inter", size: 11 } }, grid: { color: "#1a2332" }, beginAtZero: true },
+      y: { ticks: { color: "#cbd5e1", font: { family: "Inter", size: 11 } }, grid: { display: false } },
+    },
+  });
+}
+
+function renderSnapshots(rows) {
+  const html = (rows || []).map(r => {
+    const cls = r.status === "ok" ? "ok" : (r.status === "running" ? "warn" : "crit");
+    return ''
+      + '<tr class="table-row">'
+      +   '<td>' + fmtClockShort(r.finished_at || r.started_at || null) + '</td>'
+      +   '<td class="num-right">' + NUM.format(r.device_count || 0) + '</td>'
+      +   '<td class="num-right">' + NUM.format(r.interface_count || 0) + '</td>'
+      +   '<td class="num-right">' + (r.duration_ms ?? "—") + '</td>'
+      +   '<td class="num-right"><span class="pill ' + cls + '">' + r.status + '</span></td>'
+      + '</tr>';
+  }).join("");
+  document.getElementById("snapshotTable").innerHTML = html
+    || '<tr><td colspan="5" style="text-align:center;padding:16px;color:var(--text-dim);">No runs yet</td></tr>';
+}
+
+function renderRackDensity(byRack) {
+  if (!byRack || !byRack.length) {
+    document.getElementById("rackDensityTable").innerHTML =
+      '<tr><td colspan="6" style="text-align:center;padding:16px;color:var(--text-dim);">No rack data yet</td></tr>';
+    return;
+  }
+  const maxOptics = Math.max(...byRack.map(r => r.optic_count || 0));
+  const html = byRack.map(r => {
+    const pct = r.port_count > 0 ? (r.optic_count / r.port_count * 100) : 0;
+    const barW = maxOptics > 0 ? Math.round((r.optic_count / maxOptics) * 100) : 0;
+    const barColor = pct >= 85 ? "var(--crit)" : pct >= 70 ? "var(--warn)" : "var(--accent)";
+    return ''
+      + '<tr class="table-row">'
+      + '<td class="mono" style="padding-right:12px;">' + r.rack + '</td>'
+      + '<td><span class="dh-tag">' + (r.dh || r.location_slug || "—") + '</span></td>'
+      + '<td class="num-right">' + NUM.format(r.optic_count) + '</td>'
+      + '<td class="num-right">' + NUM.format(r.port_count) + '</td>'
+      + '<td class="num-right" style="color:' + barColor + ';font-weight:600;">' + pct.toFixed(0) + '%</td>'
+      + '<td style="padding-left:10px;">'
+      +   '<div style="height:6px;background:var(--line);border-radius:99px;overflow:hidden;">'
+      +     '<div style="height:100%;width:' + barW + '%;background:' + barColor + ';border-radius:99px;"></div>'
+      +   '</div>'
+      + '</td>'
+      + '</tr>';
+  }).join("");
+  document.getElementById("rackDensityTable").innerHTML = html;
+}
+
+// ---- site selector ----
+
+async function loadSites() {
+  try {
+    const data = await fetchJSON("/api/dashboard/sites");
+    if (!data.ok) return;
+    const sel = document.getElementById("siteSelect");
+    while (sel.options.length > 1) sel.remove(1);
+    for (const s of (data.sites || [])) {
+      const opt = document.createElement("option");
+      opt.value = s.slug;
+      opt.textContent = s.slug + " (" + s.device_count + " devices)";
+      sel.appendChild(opt);
+    }
+    document.getElementById("footer-sites").textContent = data.sites.length;
+  } catch (e) {
+    console.error("loadSites:", e);
+  }
+}
+
+document.getElementById("siteSelect").addEventListener("change", (e) => {
+  currentSite = e.target.value;
+  loadAll();
+});
+
+// ---- data loading ----
+
+function renderAll(s, byDh, devices, optics) {
+  renderKPIs(s);
+  renderInstalledOptics(optics);
+  renderPortUtil(optics);
+  renderDHCards(byDh.by_dh || []);
+  renderModels(devices);
+  renderCategories(optics);
+  renderOptics(optics);
+  renderSnapshots(s.recent_snapshots || []);
+  renderRackDensity(optics.by_rack || []);
+}
+
+async function loadAll() {
+  try {
+    if (!sitesLoaded) {
+      await loadSites();
+      sitesLoaded = true;
+    }
+
+    const [s, byDh, devices, optics] = await Promise.all([
+      fetchJSON("/api/dashboard/summary"),
+      fetchJSON("/api/dashboard/by-dh"),
+      fetchJSON("/api/dashboard/devices"),
+      fetchJSON("/api/dashboard/optics"),
+    ]);
+
+    if (!s.ok || s.error === "no_snapshot") {
+      document.getElementById("kpi-devices").textContent = "—";
+      document.getElementById("kpi-status").innerHTML = '<span class="pill warn">no data</span>';
+      document.getElementById("lastSeen").textContent = "Waiting for first ingest…";
+      return;
+    }
+
+    renderAll(s, byDh, devices, optics);
+  } catch (e) {
+    console.error(e);
+    document.getElementById("lastSeen").textContent = "Refresh failed: " + e.message;
+  }
+}
+
+document.getElementById("refreshBtn").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  const span = btn.querySelector("span");
+  const original = span.textContent;
+  span.textContent = "Refreshing…";
+  try {
+    await fetch("/api/dashboard/refresh", { method: "POST" });
+    await loadAll();
+  } catch (err) {
+    console.error(err);
+  } finally {
+    span.textContent = original;
+    btn.disabled = false;
+  }
+});
+
+loadAll();
+setInterval(loadAll, REFRESH_MS);
+</script>
+</body>
+</html>

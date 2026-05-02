@@ -35,6 +35,11 @@ _DH_RACK_SPACED_RE = re.compile(r"\b(dh\d+)\s+(\d{1,4})\b", re.I)
 # Data-hall plus rack with rack keyword (e.g. "dh202 rack 41")
 _DH_RACK_KEYWORD_RE = re.compile(r"\b(dh\d+)\s+(?:rack|cabinet|cab)\s+#?(\d{1,4})\b", re.I)
 
+# Spelled-out "Data Hall N rack M" (e.g. "Data Hall 4 rack 66")
+_DH_FULL_RACK_RE = re.compile(
+    r"\bdata[\s-]?hall\s*(\d+)\s+(?:rack|cabinet|cab)\s+#?(\d{1,4})\b", re.I
+)
+
 # Rack keyword plus data-hall (e.g. "rack 41 in dh202")
 _RACK_DH_RE = re.compile(
     r"\b(?:rack|cabinet|cab)\s+#?(\d{1,4})\s+(?:in|at|on)\s+(dh\d+)\b",
@@ -166,6 +171,9 @@ def extract_location(question: str) -> str:
     m = _RACK_LOC_RE.search(question)
     if m:
         return m.group(1)
+    m = _DH_FULL_RACK_RE.search(question)
+    if m:
+        return f"dh{m.group(1)}:{m.group(2).zfill(3)}"
     m = _DH_RACK_KEYWORD_RE.search(question)
     if m:
         return f"{m.group(1)}:{m.group(2).zfill(3)}"

@@ -15,6 +15,7 @@ mock_pg.pool.ThreadedConnectionPool = type(
 mock_pg.sql = types.ModuleType("psycopg2.sql")
 mock_pg.OperationalError = type("OperationalError", (Exception,), {})
 mock_pg.InterfaceError = type("InterfaceError", (Exception,), {})
+mock_pg.Error = type("Error", (Exception,), {})
 sys.modules["psycopg2"] = mock_pg
 sys.modules["psycopg2.extras"] = mock_pg.extras
 sys.modules["psycopg2.pool"] = mock_pg.pool
@@ -47,12 +48,11 @@ class HumanPhrasingRoutingTests(unittest.TestCase):
         self.assertEqual(classify_question("How many verified cables are there?"), "connection_status")
         self.assertEqual(classify_question("How many LLDP passed cables are there?"), "connection_status")
 
-    def test_bare_rack_number_returns_actionable_location_message(self):
-        result = route_question("What devices are in rack 41?", site_id=1)
-        self.assertEqual(result["question_type"], "location_lookup")
-        self.assertEqual(result["confidence"], "low")
-        self.assertIn("too broad by itself", result["context"])
-        self.assertIn("dh202:041", result["context"])
+    def test_bare_rack_number_uses_zero_padded_pattern(self):
+        # Bare rack number now produces a zero-padded cross-hall pattern (%:041:%)
+        # so queries execute instead of returning a "too broad" error.
+        params = build_query_params("What devices are in rack 41?", "location_lookup", 1)
+        self.assertEqual(params["location_pattern"], "%:041:%")
 
     def test_data_hall_prefix_is_not_misclassified_as_model(self):
         self.assertEqual(classify_question("What devices are in dh202?"), "location_lookup")

@@ -6,6 +6,12 @@ import os
 import re
 import pandas as pd
 import OpticType
+from cutsheet_preprocessor import (
+    classify_status as _classify_status,
+    COMPLETE, HUMAN_VERIFIED, LLDP_PASSED,
+)
+
+_IN_SERVICE_CANONICAL = {COMPLETE, HUMAN_VERIFIED, LLDP_PASSED}
 
 file_type_for_cutsheet = "cutsheet"
 file_type_for_ib = "infini_band"
@@ -102,25 +108,14 @@ def _normalize_cell(value):
 
 def _is_lldp_passed(raw_status):
     """True if the status value represents an LLDP-verified in-service connection."""
-    s = " ".join(str(raw_status).split()).lower()
-    return s in ("lldp: passed", "lldp passed")
+    normalized = " ".join(str(raw_status).split())
+    return _classify_status(normalized) == LLDP_PASSED
 
 
 def _is_in_service_status(raw_status):
-    """True if the status value should count as in service for workbook summaries.
-
-    We treat the common "completed / verified" family as in service so Ellendale-
-    style cutsheets with "Cable Is Ran: Complete" don't show a blank left column
-    in the split in-service view.
-    """
-    s = " ".join(str(raw_status).split()).lower()
-    if s in ("lldp: passed", "lldp passed"):
-        return True
-    if s in ("human verified", "human: verified", "manually verified"):
-        return True
-    if s in ("complete", "cable is ran: complete", "cable is ran complete"):
-        return True
-    return False
+    """True if the status value should count as in service for workbook summaries."""
+    normalized = " ".join(str(raw_status).split())
+    return _classify_status(normalized) in _IN_SERVICE_CANONICAL
 
 
 def _is_csv(input_file):
@@ -415,21 +410,60 @@ def check_if_roce_port_occupied(loc, port, connector, ports_input):
 _FORMULA_INJECTION_CHARS = ('=', '+', '-', '@')
 _MAX_CELL_VALUE_LEN = 200
 
+# ---------------------------------------------------------------------------
+# Column-name candidates for SITE-HOSTS and CUTSHEET device columns.
+# Listed in priority order — first match wins.
+# ---------------------------------------------------------------------------
+_SITE_HOSTS_HOSTNAME_COLS = ("DNS-A-RECORD", "HOSTNAME", "Hostname", "Device Name")
+_SITE_HOSTS_MODEL_COLS    = ("NETBOX MODEL", "MODEL", "Model", "Device Model")
+_SITE_HOSTS_STATUS_COLS   = ("Status", "STATUS", "Install Status")
+
+_CUTSHEET_A_DEVICE_COLS = (
+    "A-SIDE-DNS-NAME", "A-SIDE DEVICE NAME", "A SIDE DEVICE", "A-SIDE DEVICE",
+)
+_CUTSHEET_Z_DEVICE_COLS = (
+    "Z-SIDE-DNS-NAME", "Z-SIDE DEVICE NAME", "Z SIDE DEVICE", "Z-SIDE DEVICE",
+)
+
 def sanitize_cell_value(value: str) -> str:
     value = value.strip()
     while value and value[0] in _FORMULA_INJECTION_CHARS:
         value = value[1:].strip()
     return value[:_MAX_CELL_VALUE_LEN]
 
+def _first_col(df, candidates):
+    """Return the first candidate column name present in df, or None."""
+    cols = set(df.columns)
+    for c in candidates:
+        if c in cols:
+            return c
+    return None
+
+
+def _read_site_hosts_tab(input_file):
+    """Return a normalized DataFrame for the SITE-HOSTS tab, or None if absent."""
+    if _is_csv(input_file):
+        return None
+    xls = _cached_excel_file(input_file)
+    for sheet_name in xls.sheet_names:
+        if _should_skip_sheet(sheet_name):
+            continue
+        if sheet_name.strip().casefold().replace(" ", "-") in ("site-hosts", "sitehosts", "site_hosts"):
+            df = _cached_read_sheet(input_file, sheet_name=sheet_name)
+            return _normalize_columns(df)
+    return None
+
+
 def put_optic_in_list(optic_list_input, optic_type_input):
     optic_type_input = sanitize_cell_value(str(optic_type_input))
-    if not optic_type_input:
+    if not optic_type_input or len(optic_type_input) < 2:
         return
     for optic in optic_list_input:
         if optic.compare_name(optic_type_input):
             optic.add()
             return
-    to_add = OpticType.OpticType(optic_type_input, 1)
+    # Store the canonical name as uppercase so case variants merge cleanly
+    to_add = OpticType.OpticType(optic_type_input.upper(), 1)
     optic_list_input.append(to_add)
 
 def process_roce_row(row, roce_occupied_ports_in, optic_list_to_return_in, port, side):
@@ -619,6 +653,53 @@ def count_devices_cutsheet(input_file, sort_by_status=False):
             if loc and loc not in seen_locations:
                 seen_locations.add(loc)
                 target = in_service_list if (not sort_by_status or loc in in_service_locs) else not_in_service_list
+                put_optic_in_list(target, model)
+
+    # -- SITE-HOSTS pass ----------------------------------------------------
+    # Devices that exist in SITE-HOSTS but have no cable connections in the
+    # CUTSHEET (e.g. compute nodes staged but not yet cabled) are invisible to
+    # the location-based pass above.  We pick them up here as a second source,
+    # skipping any hostname already represented by a CUTSHEET connection row to
+    # avoid double-counting.  Empty or non-in-service STATUS → Not In Service.
+    site_hosts = _read_site_hosts_tab(input_file)
+    if site_hosts is not None:
+        # Collect device hostnames already covered by CUTSHEET connections.
+        seen_hostnames_lower: set = set()
+        for _dcol in _CUTSHEET_A_DEVICE_COLS + _CUTSHEET_Z_DEVICE_COLS:
+            if _dcol in cutsheet.columns:
+                for v in cutsheet[_dcol].dropna():
+                    h = sanitize_cell_value(str(v))
+                    if h and h.casefold() != 'nan':
+                        seen_hostnames_lower.add(h.casefold())
+
+        h_col = _first_col(site_hosts, _SITE_HOSTS_HOSTNAME_COLS)
+        m_col = _first_col(site_hosts, _SITE_HOSTS_MODEL_COLS)
+        s_col = _first_col(site_hosts, _SITE_HOSTS_STATUS_COLS)
+
+        if h_col and m_col:
+            seen_sh_lower: set = set()
+            for row in site_hosts.to_dict('records'):
+                hostname = sanitize_cell_value(str(row.get(h_col, '')))
+                model    = sanitize_cell_value(str(row.get(m_col, '')))
+                if not hostname or hostname.casefold() == 'nan':
+                    continue
+                if not model or model.casefold() == 'nan':
+                    continue
+                hkey = hostname.casefold()
+                # Skip: already covered by a CUTSHEET connection row
+                if hkey in seen_hostnames_lower:
+                    continue
+                # Skip: already counted from a previous SITE-HOSTS row
+                if hkey in seen_sh_lower:
+                    continue
+                seen_sh_lower.add(hkey)
+                # Determine bucket from SITE-HOSTS STATUS
+                raw_status = row.get(s_col, '') if s_col else ''
+                is_svc = _is_in_service_status(raw_status) if raw_status else False
+                if sort_by_status:
+                    target = in_service_list if is_svc else not_in_service_list
+                else:
+                    target = in_service_list
                 put_optic_in_list(target, model)
 
     return in_service_list, not_in_service_list
@@ -1078,6 +1159,9 @@ def create_side_by_side_string(in_service, not_in_service, file, print_out, labe
 
     in_lookup  = {o.name: o.count for o in in_service}
     not_lookup = {o.name: o.count for o in not_in_service}
+
+    # Sort by total count descending — highest volume optic/device at the top
+    all_names.sort(key=lambda n: in_lookup.get(n, 0) + not_lookup.get(n, 0), reverse=True)
 
     max_name_len = COL_WIDTH - 8  # reserve space for ": 99999"
     count_width  = COL_WIDTH - max_name_len - 2  # right-align counts at a fixed column

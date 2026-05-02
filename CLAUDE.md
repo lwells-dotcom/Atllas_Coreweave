@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **Atllas_Coreweave** (3418 symbols, 4031 relationships, 59 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **Atllas_Coreweave** (3391 symbols, 4114 relationships, 66 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -39,8 +39,8 @@ This project is indexed by GitNexus as **Atllas_Coreweave** (3418 symbols, 4031 
 | Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
 | Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-| Work in the Optic_Count area (109 symbols) | `.claude/skills/generated/optic-count/SKILL.md` |
-| Work in the DCT_Scripts area (18 symbols) | `.claude/skills/generated/dct-scripts/SKILL.md` |
+| Work in the Optic_Count area (122 symbols) | `.claude/skills/generated/optic-count/SKILL.md` |
+| Work in the DCT_Scripts area (23 symbols) | `.claude/skills/generated/dct-scripts/SKILL.md` |
 | Work in the Examples area (16 symbols) | `.claude/skills/generated/examples/SKILL.md` |
 | Work in the Jira area (3 symbols) | `.claude/skills/generated/jira/SKILL.md` |
 

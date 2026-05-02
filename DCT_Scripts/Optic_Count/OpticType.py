@@ -16,7 +16,7 @@ class OpticType:
         print(f"{self.name}: {self.count}")
 
     def compare_name(self, optic_type_input):
-        if self.name == optic_type_input:
+        if self.name.casefold() == optic_type_input.casefold():
             return True
         return False
     def string_count(self):
